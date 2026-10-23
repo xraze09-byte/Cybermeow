@@ -9705,8 +9705,40 @@
           }
           return a;
         };
+        const isObj = v => v && typeof v === "object" && !Array.isArray(v);
+        // Build a safe state from ANY input: wrong types, nulls, NaN, out-of-range numbers all fall back to defaults.
+        const sanitize = (raw) => {
+          const d = DEF();
+          if (!isObj(raw)) return d;
+          const num = (v, lo, hi, dflt) => { v = Math.floor(+v); return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dflt; };
+          const fl = (v, lo, hi, dflt) => { v = +v; return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dflt; };
+          d.level = num(raw.level, 1, MAX_LV, 1);
+          d.xp = fl(raw.xp, 0, 1e12, 0);
+          d.credits = num(raw.credits, 0, 1e9, 0);
+          d.bank = num(raw.bank, 0, 1e9, 0);
+          d.skillPts = num(raw.skillPts, 0, 999, 0);
+          d.prestige = num(raw.prestige, 0, 99, 0);
+          d.distReward = fl(raw.distReward, 0, 1e9, 0);
+          d.runStreak = num(raw.runStreak, 0, 1e6, 0);
+          for (const k in d.upg) d.upg[k] = num(isObj(raw.upg) ? raw.upg[k] : 0, 0, 10, 0);
+          for (const k in d.skills) d.skills[k] = num(isObj(raw.skills) ? raw.skills[k] : 0, 0, 10, 0);
+          if (isObj(raw.stats)) for (const k in d.stats) d.stats[k] = fl(raw.stats[k], 0, 1e12, d.stats[k]);
+          if (isObj(raw.ach)) for (const k in raw.ach) if (raw.ach[k]) d.ach[k] = raw.ach[k] === true ? true : (Number.isFinite(+raw.ach[k]) ? +raw.ach[k] : true);
+          if (isObj(raw.enabled)) for (const k in raw.enabled) { const id = +k; if (id >= 1 && id <= 100 && typeof raw.enabled[k] === "boolean") d.enabled[id] = raw.enabled[k]; }
+          if (Array.isArray(raw.log)) d.log = raw.log.filter(isObj).slice(-40);
+          if (Array.isArray(raw.history)) d.history = raw.history.filter(isObj).slice(-30);
+          if (isObj(raw.daily)) {
+            const r = raw.daily;
+            d.daily.date = typeof r.date === "string" ? r.date : ""; d.daily.last = typeof r.last === "string" ? r.last : "";
+            d.daily.crate = typeof r.crate === "string" ? r.crate : ""; d.daily.streak = num(r.streak, 0, 1e5, 0);
+            d.daily.ch = Array.isArray(r.ch) ? r.ch.filter(isObj) : [];
+          }
+          if (isObj(raw.weekly)) { d.weekly.week = typeof raw.weekly.week === "string" ? raw.weekly.week : ""; d.weekly.dist = fl(raw.weekly.dist, 0, 1e12, 0); d.weekly.done = raw.weekly.done === true; }
+          if (isObj(raw.best) && Array.isArray(raw.best.splits)) d.best.splits = raw.best.splits.map(Number).filter(Number.isFinite).slice(0, 20);
+          return d;
+        };
         let S = DEF();
-        try { const raw = localStorage.getItem(SAVE_KEY); if (raw) S = merge(DEF(), JSON.parse(raw)); } catch {}
+        try { const raw = localStorage.getItem(SAVE_KEY); if (raw) S = sanitize(JSON.parse(raw)); } catch { S = DEF(); }
         DEFAULT_OFF.forEach(id => { if (!(id in S.enabled)) S.enabled[id] = false; });
         const save = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch {} };
 
@@ -10598,19 +10630,7 @@
           try { obj = JSON.parse(decodeURIComponent(escape(atob(text.trim())))); }
           catch { try { obj = JSON.parse(text.trim()); } catch { throw new Error("รูปแบบไม่ถูกต้อง"); } }
           if (!obj || typeof obj !== "object" || obj.v !== 1 || typeof obj.stats !== "object") throw new Error("ไม่ใช่ไฟล์เซฟ NEON-100");
-          const next = merge(DEF(), obj);
-          // sanity clamps so a hand-edited save cannot break the UI
-          next.level = clamp(Math.floor(+next.level) || 1, 1, MAX_LV);
-          next.xp = Math.max(0, +next.xp || 0);
-          next.credits = clamp(Math.floor(+next.credits) || 0, 0, 1e9);
-          next.bank = clamp(Math.floor(+next.bank) || 0, 0, 1e9);
-          next.skillPts = clamp(Math.floor(+next.skillPts) || 0, 0, 999);
-          next.prestige = clamp(Math.floor(+next.prestige) || 0, 0, 99);
-          for (const k in next.upg) next.upg[k] = clamp(Math.floor(+next.upg[k]) || 0, 0, 10);
-          for (const k in next.skills) next.skills[k] = clamp(Math.floor(+next.skills[k]) || 0, 0, 10);
-          if (!Array.isArray(next.log)) next.log = [];
-          if (!Array.isArray(next.history)) next.history = [];
-          if (!Array.isArray(next.daily.ch)) next.daily.ch = [];
+          const next = sanitize(obj);
           S = next; save();
         }
 
