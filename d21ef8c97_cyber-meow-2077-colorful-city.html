@@ -8649,6 +8649,7 @@
         n.horizontal = horizontal; n.road = road; n.dir = dir; n.lane = lane;
         n.pos = clamp(along, -FR.HALF + 12, FR.HALF - 12);
         n.speed = random(10, 20); n.cruise = n.speed; n.stop = 0; n.cooldown = 0;
+        n.offX = 0; n.offZ = 0; n.offVX = 0; n.offVZ = 0; n.yaw = null;   // visual smoothing state (cleared on respawn)
         const rc = frRoadCoord(road);
         n.group.position.set(horizontal ? n.pos : rc - lane * (horizontal ? 0 : 1) + (horizontal ? 0 : 0), .65, horizontal ? rc + lane : n.pos);
         if (!horizontal) n.group.position.x = rc - lane;
@@ -8798,16 +8799,40 @@
             const r = Math.random();
             if (r < .3) {                                               // turn onto the crossing road
               const turnDir = Math.random() < .5 ? 1 : -1;
+              const bx = p.x, bz = p.z;                                  // where the car is drawn right now
               n.horizontal = !n.horizontal;
               const newRoad = nearest, oldRc = rc;
               n.road = newRoad; n.dir = turnDir; n.lane = turnDir * (FR.ROAD / 4); n.pos = oldRc;
+              // where the car WOULD be on the new road/lane; keep the difference as an offset that eases to 0
+              const nrc = frRoadCoord(n.road);
+              const nx = n.horizontal ? n.pos : nrc - n.lane, nz = n.horizontal ? nrc + n.lane : n.pos;
+              n.offX = bx - nx; n.offZ = bz - nz;
             }
           }
           n.cooldown -= dt;
-          if (Math.abs(n.pos) > FR.HALF - 8) { n.dir *= -1; n.pos = clamp(n.pos, -FR.HALF + 9, FR.HALF - 9); n.lane = n.dir * (FR.ROAD / 4); }
+          if (Math.abs(n.pos) > FR.HALF - 8) {
+            // U-turn at the map edge: swap to the opposite lane but keep the drawn position as a fading offset
+            const oldLane = n.lane, rcU = frRoadCoord(n.road);
+            n.dir *= -1; n.pos = clamp(n.pos, -FR.HALF + 9, FR.HALF - 9); n.lane = n.dir * (FR.ROAD / 4);
+            if (n.horizontal) n.offZ = (n.offZ || 0) + (oldLane - n.lane); else n.offX = (n.offX || 0) - (oldLane - n.lane);
+          }
           const rc2 = frRoadCoord(n.road);
-          if (n.horizontal) { p.x = n.pos; p.z = rc2 + n.lane; n.group.rotation.y = n.dir > 0 ? -Math.PI / 2 : Math.PI / 2; }
-          else { p.z = n.pos; p.x = rc2 - n.lane; n.group.rotation.y = n.dir > 0 ? Math.PI : 0; }
+          const wantYaw = n.horizontal ? (n.dir > 0 ? -Math.PI / 2 : Math.PI / 2) : (n.dir > 0 ? Math.PI : 0);
+          if (n.horizontal) { p.x = n.pos; p.z = rc2 + n.lane; }
+          else { p.z = n.pos; p.x = rc2 - n.lane; }
+          // ease the turn: the visual offset melts away over ~0.6 s and the nose swings round instead of snapping
+          // critically-damped decay: starts gently (no velocity spike on the first frame) and settles in ~1 s
+          n.offVX = n.offVX || 0; n.offVZ = n.offVZ || 0;
+          const w0 = 5, dd = Math.min(dt, .05);
+          n.offVX += (-w0 * w0 * (n.offX || 0) - 2 * w0 * n.offVX) * dd; n.offVZ += (-w0 * w0 * (n.offZ || 0) - 2 * w0 * n.offVZ) * dd;
+          n.offX = (n.offX || 0) + n.offVX * dd; n.offZ = (n.offZ || 0) + n.offVZ * dd;
+          if (Math.abs(n.offX) < .01 && Math.abs(n.offVX) < .05) { n.offX = 0; n.offVX = 0; }
+          if (Math.abs(n.offZ) < .01 && Math.abs(n.offVZ) < .05) { n.offZ = 0; n.offVZ = 0; }
+          p.x += n.offX; p.z += n.offZ;
+          if (n.yaw == null) n.yaw = wantYaw;
+          let dyaw = wantYaw - n.yaw; dyaw = Math.atan2(Math.sin(dyaw), Math.cos(dyaw));
+          n.yaw += dyaw * (1 - Math.exp(-10 * dt));
+          n.group.rotation.y = n.yaw;
           p.y = .65;
           n.vehicle.wheels.forEach(w => w.rotation.x -= n.speed * dt * 2);
           // player collision
@@ -9023,7 +9048,8 @@
         camera.lookAt(frCam.look);
         const fovT = 62 + spd * 16 + (frCar.nitro < 99 && frInputCache?.nitro && spd > .3 ? 8 : 0);
         frCam.fov = damp(frCam.fov, fovT, 5, dt); camera.fov = frCam.fov; camera.updateProjectionMatrix();
-        camera.rotation.z = 0;
+        // NOTE: do NOT reset camera.rotation.z here. After lookAt() the Euler angles can legitimately be
+        // (±π, 0, ±π); zeroing z turns the view upside-down whenever the car heads toward +Z.
       }
       let frInputCache = null;
 
@@ -9052,7 +9078,8 @@
         ctx.clearRect(0, 0, S, S);
         ctx.fillStyle = (FR.MAP_COLORS || {}).bg || "#0e1630"; ctx.fillRect(0, 0, S, S);
         ctx.save();
-        ctx.translate(S / 2, S / 2); ctx.rotate(frCar.heading); ctx.scale(scale, scale);       // heading-up map
+        // heading-up map. World x = right, z = forward; canvas y points DOWN, so flip z and rotate by -heading
+        ctx.translate(S / 2, S / 2); ctx.rotate(-frCar.heading); ctx.scale(scale, -scale);
         ctx.translate(-frCar.x, -frCar.z);
         // roads
         ctx.fillStyle = (FR.MAP_COLORS || {}).road || "#3a4568";
